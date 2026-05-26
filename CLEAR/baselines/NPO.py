@@ -17,6 +17,7 @@ from accelerate import Accelerator
 import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
+from baselines.reproducibility import make_dataloader_generator, set_global_seed
 
 def find_all_linear_names(model):
     print(model)
@@ -154,6 +155,7 @@ def load_model_and_processor(args):
 def main(args):
     # Load model and processor
     print("Trainer Status is ", args.trainer)
+    set_global_seed(args.seed)
     model, processor = load_model_and_processor(args)
 
     if "llava" in args.model_id:
@@ -225,6 +227,7 @@ def main(args):
             multimodal_forget_dataset,
             batch_size=args.batch_size,
             shuffle=True,
+            generator=make_dataloader_generator(args.seed, offset=0),
             collate_fn=lambda x: train_collate_function(x, processor,device, True)
         )
 
@@ -232,6 +235,7 @@ def main(args):
             multimodal_retain_dataset,
             batch_size=args.batch_size,
             shuffle=True,
+            generator=make_dataloader_generator(args.seed, offset=1),
             collate_fn=lambda x: train_collate_function(x, processor,device, True)
         )
     else:
@@ -325,7 +329,8 @@ if __name__ == "__main__":
     parser.add_argument("--trainer", type=bool, default=False, help="Use HuggingFace Trainer")
     parser.add_argument("--data_folder", type=str, default="./data", help="Data folder")
     parser.add_argument("--lcoef", type=float, default=1.0)
-    parser.add_argument("--rank", type=int, default=4)
+    parser.add_argument("--rank", type=int, default=8)
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducible training")
 
     args = parser.parse_args()
     main(args)

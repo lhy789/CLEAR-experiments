@@ -1,0 +1,12 @@
+.hf_cache/
+.codex
+.vscode/
+
+CLEAR/models/
+CLEAR/checkpoints
+CLEAR/path_to_save_mask/
+CLEAR/data/CLEAR/
+CLEAR/data/clear-two-fold-val/
+
+**/__pycache__/
+*.pyc

@@ -1,3 +1,6 @@
+import os
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+
 import sys
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
@@ -20,6 +23,18 @@ import torch
 from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model
 from torch.optim import AdamW
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ("yes", "true", "t", "y", "1"):
+        return True
+    if v.lower() in ("no", "false", "f", "n", "0"):
+        return False
+    raise argparse.ArgumentTypeError("Boolean value expected.")
+
+
+# 这个函数用于在模型中找到所有线性层的名称，
+# 以便在 LoRA（Low-Rank Adaptation）训练过程中指定要调整的模块。
 def find_all_linear_names(model):
     cls = torch.nn.Linear
     lora_module_names = set()
@@ -36,6 +51,8 @@ def find_all_linear_names(model):
     return list(lora_module_names)
 
 # Example usage:
+# 加载模型和处理器的函数，根据提供的model_id加载不同的模型和处理器。
+# 不同的模型可能需要不同的加载方式，这些都通过条件语句进行处理。
 def load_model_and_processor(args):
     """
     Load the model and processor based on the provided model_id.
@@ -110,6 +127,9 @@ def load_model_and_processor(args):
             init_lora_weights="gaussian",
         )
         print("getting peft model")
+        # 给模型加 LoRA（只训练小部分参数）
+        # 检查训练参数规模
+        # 初始化多模态数据处理器并规范 padding 行为
         model = get_peft_model(model, lora_config)
         model.print_trainable_parameters()
         processor = AutoProcessor.from_pretrained(args.model_id)
@@ -152,6 +172,7 @@ def main(args):
     print("Tokenizer Length: ", len(tokenizer))
 
     # Resize token embeddings to match the tokenizer
+    # 这一步是为了确保模型的词嵌入矩阵大小与处理器的 tokenizer 的词汇表大小一致。
     model.resize_token_embeddings(len(processor.tokenizer))
     if len(tokenizer) > model.get_input_embeddings().weight.shape[0]:
         print("WARNING: Resizing the embedding matrix to match the tokenizer vocab size.")
@@ -163,10 +184,16 @@ def main(args):
         print("This is NOT a PEFT model.")
 
     # Dataset and Dataloader setup
+    # 根据是否使用 oracle 数据集来加载不同的训练数据集
+    # oracle 数据集包含了保留的数据比例
+    # full 数据集则包含了全部数据。
     if args.is_oracle:
         retain_df=load_dataset(f"data/CLEAR/retain{100-args.forget_ratio}+tofu",split="train")
+        print(f"使用retain数据集: {100-args.forget_ratio}%")
+        print(args.is_oracle)
     else:
         retain_df=load_dataset(f"data/CLEAR/full+tofu",split="train")
+        print(f"使用retain数据集: 100%")
     multimodal_retain_dataset = CLEAR_Dataset(data=retain_df,mode=CAPTION_MODE)
 
     if processor:
@@ -180,6 +207,8 @@ def main(args):
         raise ValueError("Model ID not recognized or not supported. Please provide a valid model ID.")
 
     # Accelerator setup
+    # Accelerator 是 Hugging Face 的一个库，用于简化分布式训练和混合精度训练的设置。
+    # 这里根据是否启用梯度累积来配置训练过程。
     accelerator = Accelerator()
     if args.gradient_accumulation:
         print("Gradient accumulation enabled.")
@@ -190,6 +219,8 @@ def main(args):
 
     optimizer = AdamW(model.parameters(), lr=args.lr)
 
+    # 构造学习率调度器（learning rate scheduler），
+    # 用于在训练过程中动态调整学习率（lr），而不是固定不变。
     lr_scheduler = get_scheduler(
         name="linear",
         optimizer=optimizer,
@@ -251,10 +282,10 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size for training")
     parser.add_argument("--lr", type=float, default=5e-4, help="Learning rate")
     parser.add_argument("--num_epochs", type=int, default=5, help="Number of epochs for training")
-    parser.add_argument("--gradient_accumulation", type=bool, default=False, help="Enable gradient accumulation")
-    parser.add_argument("--trainer", type=bool, default=False, help="Use HuggingFace Trainer")
+    parser.add_argument("--gradient_accumulation", type=str2bool, default=False, help="Enable gradient accumulation")
+    parser.add_argument("--trainer", type=str2bool, default=False, help="Use HuggingFace Trainer")
     parser.add_argument("--rank", type=int, default=16)
-    parser.add_argument("--is_oracle", type=bool, default=False)
+    parser.add_argument("--is_oracle", type=str2bool, default=False)
 
     args = parser.parse_args()
 

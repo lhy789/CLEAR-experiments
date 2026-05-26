@@ -26,15 +26,18 @@ def str2bool(v):
 def eval_classification(model, processor, data_path,with_options):
     print("################################## Classification Task Starts ##############################################")
     print(f"############################## Evaluating {data_path} Mode, with_options={with_options} #########################################" )
-    if "forget" in data_path:
-        VQA_data=load_from_disk(data_path)
-    elif "retain" in data_path:
-        VQA_data=load_dataset(data_path,split="train")
+    if "forget" in data_path or "retain" in data_path:
+        # Support both datasets.save_to_disk format and local parquet config folders.
+        try:
+            VQA_data = load_from_disk(data_path)
+        except Exception:
+            VQA_data = load_dataset(data_path, split="train")
     else:
         ValueError("Data path should contain forget or retain")
     print(VQA_data)
-    correct_count,VQA_num = 0,0
-    for idx,VQA_sample in enumerate(VQA_data):
+    correct_count, wrong_count, VQA_num = 0, 0, 0
+    progress_bar = tqdm(VQA_data, desc="Evaluating", total=len(VQA_data))
+    for VQA_sample in progress_bar:
         image=VQA_sample.get("image",None)
         question = VQA_sample.get("question", "What is the name of the person in the image?")
         answer = VQA_sample.get("name", "")
@@ -57,27 +60,40 @@ def eval_classification(model, processor, data_path,with_options):
         out_wo_prompt = VQA_outputs[ : , inputs.input_ids.shape[-1] : ]
         generated_text=processor.tokenizer.decode(out_wo_prompt[0], skip_special_tokens=True)
         assistant_response = re.sub(r'[^a-zA-Z0-9]', '', generated_text)
-        print("Generated text is : \n","**************\n",generated_text,"\n**************")
+
+        # Legacy per-example verbose logging kept here for reference.
+        # print("Generated text is : \n","**************\n",generated_text,"\n**************")
 
         if not with_options: # answer in response is okay
             answer = re.sub(r'[^a-zA-Z0-9]', '', answer)
             if answer.lower() in assistant_response.lower():
-                print("Correct Answer!")
                 correct_count+=1
+                # print("Correct Answer!")
             else:
-                print(f"Wrong Answer! ${assistant_response}$ doesn't include ${answer}$")
+                wrong_count += 1
+                # print(f"Wrong Answer! ${assistant_response}$ doesn't include ${answer}$")
         else: # string matching
             predicted_answer = assistant_response[0].upper() if assistant_response and assistant_response[0].upper() else None
             modified_answer = re.sub(r'[^a-zA-Z0-9]', '', answer)
             if predicted_answer==correct_answer or modified_answer.lower() in assistant_response.lower():
-                print("Correct Answer!")
                 correct_count+=1
+                # print("Correct Answer!")
             else:
-                print(f"Wrong Answer! ${predicted_answer}$ != ${correct_answer}$. {answer}")
-        print("##################################")
+                wrong_count += 1
+                # print(f"Wrong Answer! ${predicted_answer}$ != ${correct_answer}$. {answer}")
         VQA_num+=1
+
+        # Legacy separator kept for reference.
+        # print("##################################")
+
+        progress_bar.set_postfix(
+            correct=correct_count,
+            wrong=wrong_count,
+            acc=f"{correct_count / VQA_num:.4f}",
+        )
     
     print(f"VQA Correct Count: {correct_count}/{VQA_num}")
+    print(f"VQA Wrong Count: {wrong_count}/{VQA_num}")
     print(f"VQA Accuracy: {correct_count/VQA_num}")
     print("################################## Classification Task Ends ##############################################")
     return {"VQA Accuracy": correct_count/VQA_num}
@@ -104,8 +120,9 @@ def eval_classification_real(model, processor, data_path):
     print("################################## Classification Task Starts ##############################################")
     print(f"############################## Evaluating {data_path} Mode #########################################" )
     df=load_dataset(data_path,split="train")
-    correct_count,VQA_num = 0,0
-    for i, sample in enumerate(df):
+    correct_count, wrong_count, VQA_num = 0, 0, 0
+    progress_bar = tqdm(df, desc="Evaluating", total=len(df))
+    for sample in progress_bar:
         question = sample.get("question", "What is the name of the person in the image?")
         answer = sample.get("answer", "")
         options=sample.get("options",[])
@@ -122,17 +139,30 @@ def eval_classification_real(model, processor, data_path):
         out_wo_prompt = outputs[ : , inputs.input_ids.shape[-1] : ]
         generated_text=processor.tokenizer.decode(out_wo_prompt[0], skip_special_tokens=True)
         assistant_response = re.sub(r'[^a-zA-Z0-9]', '', generated_text)
-        print("Generated text is : \n","**************\n",generated_text,"\n**************")
+
+        # Legacy per-example verbose logging kept here for reference.
+        # print("Generated text is : \n","**************\n",generated_text,"\n**************")
+
         predicted_answer = assistant_response[0].upper() if assistant_response and assistant_response[0].upper() else None
         if predicted_answer==correct_answer:
-            print("Correct Answer!")
             correct_count+=1
+            # print("Correct Answer!")
         else:
-            print(f"Wrong Answer! ${assistant_response}$ != ${correct_answer}$. {answer}")
+            wrong_count += 1
+            # print(f"Wrong Answer! ${assistant_response}$ != ${correct_answer}$. {answer}")
         VQA_num+=1
-        print("##################################")
+
+        # Legacy separator kept for reference.
+        # print("##################################")
+
+        progress_bar.set_postfix(
+            correct=correct_count,
+            wrong=wrong_count,
+            acc=f"{correct_count / VQA_num:.4f}",
+        )
     
     print(f"VQA Correct Count: {correct_count}/{VQA_num}")
+    print(f"VQA Wrong Count: {wrong_count}/{VQA_num}")
     print(f"VQA Accuracy: {correct_count/VQA_num}")
     print("################################## Classification Task Ends ##############################################")
     return {"VQA Accuracy": correct_count/VQA_num}
@@ -225,7 +255,7 @@ def main():
     if "retain" in args.eval_list:
         print("### Evaluating Retain Shared Set ###")
         print(f"{args.data_folder}/{args.retain_cls_folder}")
-        retain_classification_result = eval_classification(model=model, processor=processor, data_path=f"{args.data_folder}/{args.retain_cls_folder}", wo_options=True)
+        retain_classification_result = eval_classification(model=model, processor=processor, data_path=f"{args.data_folder}/{args.retain_cls_folder}", with_options=True)
 
         results_data["Retain Set Results"]= {
             "classification": retain_classification_result,

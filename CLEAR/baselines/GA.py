@@ -16,6 +16,7 @@ from data_process.CLEAR_process import CLEAR_Dataset, CAPTION_MODE, RECOGNITION_
 from accelerate import Accelerator
 import torch
 from torch.optim import AdamW
+from baselines.reproducibility import make_dataloader_generator, set_global_seed
 
 import re
 
@@ -132,6 +133,7 @@ def load_model_and_processor(args):
 def main(args):
     # Load model and processor
     print("Trainer Status is ", args.trainer)
+    set_global_seed(args.seed)
     model, processor = load_model_and_processor(args)
     print(model)
     tokenizer = processor.tokenizer
@@ -159,6 +161,7 @@ def main(args):
             multimodal_forget_dataset,
             batch_size=args.batch_size,
             shuffle=True,
+            generator=make_dataloader_generator(args.seed),
             collate_fn=lambda x: train_collate_function(x, processor,"cuda", True)
         )
     else:
@@ -230,7 +233,8 @@ if __name__ == "__main__":
     parser.add_argument("--max_length", type=int, default=384, help="Maximum sequence length")
     parser.add_argument("--gradient_accumulation", type=bool, default=False, help="Enable gradient accumulation")
     parser.add_argument("--trainer", type=bool, default=False, help="Use HuggingFace Trainer")
-    parser.add_argument("--rank", type=int, default=4)
+    parser.add_argument("--rank", type=int, default=8)
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducible training")
 
     args = parser.parse_args()
 

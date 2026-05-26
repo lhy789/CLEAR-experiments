@@ -14,8 +14,10 @@ import torch
 from transformers import LlavaForConditionalGeneration, AutoProcessor, get_scheduler, MllamaForConditionalGeneration, AutoTokenizer, Qwen2VLForConditionalGeneration, Qwen2_5_VLForConditionalGeneration
 from data_process.CLEAR_process import CLEAR_Dataset, CAPTION_MODE, RECOGNITION_MODE, train_collate_clear, NONE_MODE,train_collate_clear_ansonly
 from accelerate import Accelerator
+from accelerate.utils.modeling import get_state_dict_offloaded_model
 import torch
 from torch.optim import AdamW
+from baselines.reproducibility import make_dataloader_generator, set_global_seed
 
 def str2bool(v):
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
@@ -33,6 +35,8 @@ def _get_decoder_layers(m):
         lm = m.language_model
     elif hasattr(m, "text_model"):
         lm = m.text_model
+    elif hasattr(m, "model") and hasattr(m.model, "language_model"):
+        lm = m.model.language_model
     elif hasattr(m, "model") and hasattr(m.model, "text_model"):
         lm = m.model.text_model
     else:
@@ -45,6 +49,27 @@ def _get_decoder_layers(m):
         return lm.layers
 
     raise ValueError(f"Unknown Decoder layers. type={type(m)}")
+
+
+def _save_pretrained_safely(accelerator, model, processor, save_dir, safe_serialization=True):
+    os.makedirs(save_dir, exist_ok=True)
+    unwrapped_model = accelerator.unwrap_model(model)
+
+    # `transformers.save_pretrained` can fail on some multimodal models when weights are
+    # still offloaded via Accelerate hooks. Materialize a concrete CPU state_dict first.
+    has_meta_params = any(param.device.type == "meta" for param in unwrapped_model.parameters())
+    if has_meta_params:
+        state_dict = get_state_dict_offloaded_model(unwrapped_model)
+    else:
+        state_dict = accelerator.get_state_dict(model)
+
+    unwrapped_model.save_pretrained(
+        save_dir,
+        state_dict=state_dict,
+        safe_serialization=safe_serialization,
+    )
+    if processor is not None:
+        processor.save_pretrained(save_dir)
 
 # Example usage:
 def load_model_and_processor(args):
@@ -104,7 +129,7 @@ def load_model_and_processor(args):
 
     return model, processor
 
-
+# 计算知识系数 C
 @torch.no_grad()
 def compute_knowledge_coeffs_from_batch(model, batch, eps=1e-12):
     model.eval()
@@ -294,6 +319,7 @@ def apply_weakening_to_model(model, gates, start_layer, end_layer, rescale=False
         for l, layer in enumerate(layers):
             if l < start_layer or l > end_layer:
                 continue
+            # w就是v矩阵
             W = layer.mlp.down_proj.weight
             if rescale:
                 W_old = W.clone()
@@ -312,6 +338,7 @@ def apply_weakening_to_model(model, gates, start_layer, end_layer, rescale=False
 def main(args):
     # Load model and processor
     print("Trainer Status is ", args.trainer)
+    set_global_seed(args.seed)
     model, processor = load_model_and_processor(args)
     print(model)
     tokenizer = processor.tokenizer
@@ -329,8 +356,8 @@ def main(args):
         print("This is NOT a PEFT model.")
 
     # Dataset and Dataloader setup
-    forget_df=load_dataset(f"data/CLEAR/forget{args.forget_ratio:02}",split=f"train")#forget is the dataset that we want to forget
-    retain_df=load_dataset(f"data/CLEAR/retain{100-args.forget_ratio}",split="train")#retain is the dataset that we want to preserve
+    forget_df=load_dataset(os.path.join(args.data_folder, f"forget{args.forget_ratio:02}"),split=f"train")#forget is the dataset that we want to forget
+    retain_df=load_dataset(os.path.join(args.data_folder, f"retain{100-args.forget_ratio}"),split="train")#retain is the dataset that we want to preserve
     
     multimodal_forget_dataset = CLEAR_Dataset(data=forget_df,mode=CAPTION_MODE)
     multimodal_retain_dataset = CLEAR_Dataset(data=retain_df,mode=CAPTION_MODE)
@@ -343,12 +370,14 @@ def main(args):
             multimodal_forget_dataset,
             batch_size=args.batch_size,
             shuffle=True,
+            generator=make_dataloader_generator(args.seed, offset=0),
             collate_fn=lambda x: train_collate_function(x, processor,device, True)
         )
         train_dataloader_retain = DataLoader(
             multimodal_retain_dataset,
             batch_size=args.batch_size,
             shuffle=True,
+            generator=make_dataloader_generator(args.seed, offset=1),
             collate_fn=lambda x: train_collate_function(x, processor,device, True)
         )
     else:
@@ -369,13 +398,15 @@ def main(args):
     )
     n_iters = len(train_dataloader_forget)
     
+    kc_path = os.path.join(args.kc_cache_dir, f"kc_r_retain_{100 - args.forget_ratio:02}.pt")
+
     if args.phase == 'compute_kc_r':
         kc_r = compute_knowledge_coeffs(model, train_dataloader_retain)
-        os.makedirs(f"kc",exist_ok=True)
-        torch.save(kc_r, f"kc/kc_r_retain_{100 - args.forget_ratio:02}.pt")
+        os.makedirs(args.kc_cache_dir, exist_ok=True)
+        torch.save(kc_r, kc_path)
         return
 
-    kc_r = torch.load(f"kc/kc_r_retain_{100 - args.forget_ratio:02}.pt")
+    kc_r = torch.load(kc_path, weights_only=True)
     for epoch in range(args.num_epochs):
         train_data_forget = enumerate(train_dataloader_forget)
         for iter in tqdm(range(0, n_iters)):
@@ -392,8 +423,13 @@ def main(args):
 
     # Save the final model
     accelerator.wait_for_everyone()
-    unwrapped_model = accelerator.unwrap_model(model)
-    unwrapped_model.save_pretrained(args.save_dir, safe_serialization=True)
+    _save_pretrained_safely(
+        accelerator=accelerator,
+        model=model,
+        processor=processor,
+        save_dir=args.save_dir,
+        safe_serialization=True,
+    )
     print(f"Model saved to: {args.save_dir}")
 
 if __name__ == "__main__":
@@ -410,6 +446,8 @@ if __name__ == "__main__":
     parser.add_argument("--max_length", type=int, default=384, help="Maximum sequence length")
     parser.add_argument("--gradient_accumulation", type=bool, default=False, help="Enable gradient accumulation")
     parser.add_argument("--trainer", type=bool, default=False, help="Use HuggingFace Trainer")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducible training")
+    parser.add_argument("--kc_cache_dir", type=str, default="kc", help="Directory for caching kc_r tensors")
 
     parser.add_argument("--phase", type=str, default="weakening") # or compute_kc_r
     parser.add_argument("--gamma", type=float, default=0.02)

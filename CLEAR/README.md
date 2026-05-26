@@ -61,7 +61,20 @@ CUDA_VISIBLE_DEVICES=0 python data_process/gen_mask.py
 ```
 Second, run the selective unlearning process:
 ```
-python MMU.py --model_id Qwen/Qwen2-VL-2B-Instruct --forget_ratio 05 --save_dir path_to_save_dir --batch_size 4 --lr 1e-5 --num_epochs 1 --grad_mask_path "path_to/language_mask.pt"
+python /home/jb/code/KVW/CLEAR/baselines/MMU.py --model_id /home/jb/code/KVW/CLEAR/models/Qwen2-VL-2B-Instruct --forget_ratio 05 --save_dir path_to_save_dir --batch_size 4 --lr 1e-5 --num_epochs 1 --grad_mask_path "path_to/language_mask.pt"
+
+cd /home/jb/code/KVW/CLEAR
+
+CUDA_VISIBLE_DEVICES=0,1,2,3 python -m baselines.MMU \
+  --model_id /home/jb/code/KVW/CLEAR/models/Qwen2-VL-2B-Instruct \
+  --vanilla_dir /home/jb/code/KVW/CLEAR/checkpoints/qwen2B_vanilla \
+  --forget_ratio 5 \
+  --save_dir /home/jb/code/KVW/CLEAR/checkpoints/MMU_5 \
+  --batch_size 2 \
+  --lr 1e-5 \
+  --num_epochs 1 \
+  --grad_mask_path /home/jb/code/KVW/CLEAR/path_to_save_mask/forget5/language_mask.pt
+
 ```
 ## Running Knowledge Vector Weakening (KVW)
 First, precompute KC_r
